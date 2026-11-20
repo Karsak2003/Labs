@@ -11,10 +11,13 @@ httpx
 beautifulsoup4   
 lxml            
 
-# --- Вывод и обработка данных ---
 tabulate       
 pandas        
 tqdm         
 
-# --- Вспомогательные ---
 chardet        
+
+requests  
+html5lib 
+rutermextract 
+graphviz 
