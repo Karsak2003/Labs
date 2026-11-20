@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Практика 1: "Интеллектуальный анализ веб-данных" 
+
 Консольное приложение для поиска по архиву Common Crawl.
 Использует CDX-индекс для быстрого поиска и WARC-файлы
 для точечной загрузки содержимого страниц.
@@ -17,9 +18,6 @@ from tabulate import tabulate
 from warcio.archiveiterator import ArchiveIterator
 
 
-# ============================================================
-# 1. Парсер аргументов CLI (argparse)
-# ============================================================
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Поиск по архиву Common Crawl через CDX-индекс",
@@ -54,9 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ============================================================
-# 2. Функция поиска по CDX-индексу
-# ============================================================
+
 def search_cdx(keywords: list[str], domain: str | None, limit: int) -> list[dict]:
     """
     Ищет по CDX-индексу Common Crawl.
@@ -93,9 +89,6 @@ def search_cdx(keywords: list[str], domain: str | None, limit: int) -> list[dict
     return results
 
 
-# ============================================================
-# 3. Загрузка и парсинг WARC через Range-запрос
-# ============================================================
 CC_BASE_URL = "https://data.commoncrawl.org/"
 
 
@@ -145,9 +138,6 @@ def extract_text_and_title(html: str, max_chars: int = 200) -> tuple[str, str]:
     return title, snippet
 
 
-# ============================================================
-# 4. Форматированный вывод через tabulate
-# ============================================================
 def format_timestamp(ts: str) -> str:
     """Преобразует '20240315123456' → '2024-03-15 12:34:56'."""
     if not ts or len(ts) < 14:
@@ -184,9 +174,6 @@ def print_results(results: list[dict], show_text: bool) -> None:
     print(tabulate(rows, headers=headers, tablefmt="grid", maxcolwidths=[None, 60, 20, 40]))
 
 
-# ============================================================
-# Основная логика
-# ============================================================
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -197,7 +184,6 @@ def main() -> int:
     print(f"📊 Лимит: {args.limit}")
     print("─" * 60)
 
-    # Шаг 1: поиск по CDX
     print("⏳ Поиск по CDX-индексу...")
     results = search_cdx(args.keywords, args.domain, args.limit)
     print(f"✅ Найдено записей: {len(results)}\n")
@@ -205,7 +191,6 @@ def main() -> int:
     if not results:
         return 0
 
-    # Шаг 2: опциональная загрузка WARC
     if args.show_text:
         print("⏳ Загрузка содержимого страниц из WARC...")
         for i, r in enumerate(results, 1):
@@ -219,11 +204,9 @@ def main() -> int:
                 r["title"] = "— (не удалось загрузить)"
                 r["snippet"] = ""
     else:
-        # Без --show-text пытаемся хотя бы вытащить title из URL
         for r in results:
             r["title"] = ""
 
-    # Шаг 3: вывод
     print()
     print_results(results, args.show_text)
     return 0
