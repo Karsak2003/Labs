@@ -10,18 +10,15 @@
 import argparse
 import sys
 import time
-from pathlib import Path
+# from pathlib import Path
 from typing import NamedTuple
 
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-# Опциональные зависимости — проверяем при использовании
-try:
-    import rutermextract
-except ImportError:
-    rutermextract = None
+from razdel import sentenize, tokenize
+import pymorphy3
 
 try:
     import graphviz
@@ -43,6 +40,40 @@ DEFAULT_USER_AGENT = (
 
 # Теги, из которых извлекаем основной текст (из лекции)
 TEXT_TAGS = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "article", "section"]
+
+STOP_WORDS = {
+    "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как",
+    "а", "то", "все", "она", "так", "его", "но", "да", "ты", "к",
+    "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было",
+    "вот", "от", "меня", "еще", "нет", "о", "из", "ему", "теперь",
+    "когда", "даже", "ну", "вдруг", "ли", "если", "уже", "или", "ни",
+    "быть", "был", "была", "были", "это", "для", "чтобы", "есть",
+    "каждый", "который", "его", "её", "их", "мы", "вы", "они",
+    "этот", "тот", "такой", "какой", "можно", "нужно", "иметь",
+    "год", "года", "лет", "г", "т", "д", "руб", "тыс", "млн",
+    "также", "однако", "кроме", "через", "между", "после", "перед",
+    "при", "над", "под", "о", "об", "без", "до", "от", "к", "по",
+}
+
+EXCLUDED_POS = {
+    "PREP",  # предлог
+    "CONJ",  # союз
+    "PRCL",  # частица
+    "INTJ",  # междометие
+    "NPRO",  # местоимение
+    "NUMR",  # числительное
+    "Apro",  # местоимение-прилагательное
+}
+
+
+# Ленивая инициализация — создаётся один раз
+_morph_analyzer = None
+
+def _get_morph():
+    global _morph_analyzer
+    if _morph_analyzer is None:
+        _morph_analyzer = pymorphy3.MorphAnalyzer()
+    return _morph_analyzer
 
 
 class Resource(NamedTuple):
@@ -174,21 +205,63 @@ def extract_text(soup: BeautifulSoup) -> str:
 
 def extract_terms(text: str, top_n: int) -> set[str]:
     """
-    Извлекает ключевые термины через rutermextract.
-    Термины уже в нормальной форме (лемматизация встроена).
+    Извлекает ключевые термины через pymorphy3 + razdel.
+    Термины — это substantive-словосочетания (прил+сущ) и одиночные сущ.
+    в нормальной форме (именительный падеж, ед.ч.).
     """
-    if rutermextract is None:
-        raise RuntimeError(
-            "rutermextract не установлен. Выполните: pip install rutermextract"
-        )
     if not text or len(text) < 50:
         return set()
 
-    extractor = rutermextract.TermExtractor()
-    terms = extractor(text)
-    # Берём top_n самых релевантных
-    return {t.normalized for t in terms[:top_n]}
+    morph = _get_morph()
+    term_freq: dict[str, int] = {}
 
+    # Разбиваем на предложения, затем на токены
+    for sent in sentenize(text):
+        tokens = list(tokenize(sent.text))
+        # Получаем разборы для всех токенов
+        parses = []
+        for t in tokens:
+            if t.text.strip().lower() in STOP_WORDS:
+                parses.append(None)
+                continue
+            p = morph.parse(t.text)
+            if not p:
+                parses.append(None)
+                continue
+            # Берём наиболее вероятный разбор
+            best = p[0]
+            if best.tag.POS in EXCLUDED_POS:
+                parses.append(None)
+                continue
+            parses.append(best)
+
+        # Ищем биграммы: прилагательное + существительное
+        for i in range(len(parses) - 1):
+            cur = parses[i]
+            nxt = parses[i + 1]
+            if cur is None or nxt is None:
+                continue
+
+            if cur.tag.POS == "ADJF" and nxt.tag.POS == "NOUN":
+                # Составной термин
+                term = f"{cur.normal_form} {nxt.normal_form}"
+                term_freq[term] = term_freq.get(term, 0) + 1
+            elif cur.tag.POS == "NOUN" and nxt.tag.POS == "NOUN":
+                # Редкие, но возможные составные термины (падеж-падеж)
+                term = f"{cur.normal_form} {nxt.normal_form}"
+                term_freq[term] = term_freq.get(term, 0) + 1
+
+        # Одиночные существительные
+        for p in parses:
+            if p is not None and p.tag.POS == "NOUN":
+                lemma = p.normal_form
+                # Фильтруем слишком короткие и не-кириллицу
+                if len(lemma) >= 4 and lemma.isalpha():
+                    term_freq[lemma] = term_freq.get(lemma, 0) + 1
+
+    # Сортируем по частоте, берём top_n
+    sorted_terms = sorted(term_freq.items(), key=lambda x: -x[1])
+    return {t for t, _ in sorted_terms[:top_n]}
 
 def extract_domain(url: str) -> str:
     """Короткое имя узла — домен без протокола и www."""
@@ -263,7 +336,7 @@ def build_graph(
 # 5. Сохранение DOT и рендеринг
 # ============================================================
 def save_graph(
-    dot: "graphviz.Digraph",
+    dot,
     output_base: str,
     render: bool,
     fmt: str,
@@ -272,16 +345,17 @@ def save_graph(
     DOT-файл сохраняется ВСЕГДА.
     Рендеринг (pdf/svg/png) — опционально.
     """
-    # 1. DOT-файл — всегда
-    dot_path = Path(f"{output_base}.dot")
-    dot_path.write_text(dot.source, encoding="utf-8")
+    # 1. DOT-файл — всегда (через with open)
+    dot_path = f"{output_base}.dot"
+    with open(dot_path, "w", encoding="utf-8") as file:
+        file.write(dot.source)
     print(f"💾 DOT-файл сохранён: {dot_path}")
 
     # 2. Рендеринг — если запрошен
     if render:
         dot.format = fmt
         rendered_path = dot.render(filename=output_base, cleanup=True)
-        print(f"🖼  Граф отрендерен в: {rendered_path}")
+        print(f"🖼️ Граф отрендерен в: {rendered_path}")
     else:
         print("ℹ️  Рендеринг пропущен (--no-render)")
 
@@ -307,10 +381,6 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Проверка зависимостей
-    if rutermextract is None:
-        print("❌ rutermextract не установлен", file=sys.stderr)
-        return 1
     if graphviz is None:
         print("❌ graphviz не установлен", file=sys.stderr)
         return 1
@@ -338,7 +408,7 @@ def main() -> int:
     print(f"🔗 URL-ов в списке: {len(urls)}")
     print(f"🎯 Порог пересечения терминов: {args.threshold}")
     print(f"📊 Топ-N терминов с каждой страницы: {args.top_n}")
-    print(f"🖼  Рендеринг: {'ДА (' + args.format + ')' if args.render else 'НЕТ'}")
+    print(f"🖼️  Рендеринг: {'ДА (' + args.format + ')' if args.render else 'НЕТ'}")
     print("─" * 60)
 
     # Сбор ресурсов

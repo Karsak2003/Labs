@@ -19,5 +19,6 @@ chardet
 
 requests  
 html5lib 
-rutermextract 
+pymorphy3
 graphviz 
+razdel
