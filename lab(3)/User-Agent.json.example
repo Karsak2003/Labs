@@ -1,0 +1,5 @@
+{
+  "user_agent": "WikimediaLabBot/1.0 (student; course-web-mining; contact@example.com) python-requests/2.31",
+  "email": "student@example.com",
+  "project_url": "https://github.com/username/wikimedia-collector"
+}
