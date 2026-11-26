@@ -2,12 +2,6 @@
 
 > Консольное приложение для автоматизированного сбора данных из экосистемы Wikimedia через MediaWiki API с адаптивным rate limiting и batch-запросами.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-stable-success)
-![API](https://img.shields.io/badge/API-MediaWiki-orange)
-![Rate Limit](https://img.shields.io/badge/rate%20limit-adaptive-yellow)
-
 Лабораторная работа №3 по курсу «Интеллектуальный анализ веб-данных».  
 Автоматизированный сборщик данных, взаимодействующий с основными проектами Wikimedia: **Википедия**, **Викиданные**, **Викисловарь** и **Wikimedia Commons**.
 
@@ -24,9 +18,12 @@
 - [Примеры запуска](#-примеры-запуска)
 - [Структура выходных данных](#-структура-выходных-данных)
 - [Этикет API и rate limiting](#-этикет-api-и-rate-limiting)
+- [Рендеринг графа](#-рендеринг-графа)
+- [Диагностика Graphviz](#-диагностика-graphviz)
 - [Архитектура](#-архитектура)
 - [API-эндпоинты](#-api-эндпоинты)
-- [Лицензия](#-лицензия)
+- [Известные ограничения](#-известные-ограничения)
+- [Диагностика](#-Диагностика)
 
 ---
 
@@ -50,14 +47,15 @@
 |-------------|----------|
 | 🔍 Мульти-проектный сбор | Википедия (ru/en), Викиданные, Викисловарь, Commons |
 | 🖼 Picture of the Day | Автоматическая загрузка картинки дня с описанием |
-| 🕸 Граф связей | DOT + PDF с минимум 30 статьями |
+| 🕸 Граф связей | DOT + PDF с минимум 30 статьями, кликабельные узлы |
 | 📦 JSON-экспорт | Полная структура узла + связанные узлы |
 | 🎛 CLI-интерфейс | Гибкая настройка через `argparse` |
-| 🐢 Этикет API | Автоматические задержки между запросами |
-| 🔄 Адаптивный rate limiting | Экспоненциальный backoff при 429 + `Retry-After` |
-| 📋 Batch-запросы | Группировка до 50 titles за один HTTP-запрос |
-| 📊 Мониторинг rate limit | Проверка заголовков `X-RateLimit-*` |
+| 🐢 Этикет API | Адаптивные задержки между запросами |
+| 🔄 Обработка rate limit | Подстройка задержки по `429` и `X-RateLimit-*` |
+| 📋 Batch-запросы | Группировка до 50 `titles` за один HTTP-запрос |
 | 🪪 User-Agent из файла | Загрузка идентификации из `User-Agent.json` |
+| 🔒 Валидация PDF | Проверка сигнатуры `%PDF` / `%%EOF` после рендера |
+| 🔗 Безопасные URL | Percent-encoding заголовков в атрибуте `URL` |
 
 ---
 
@@ -66,18 +64,13 @@
 ### Системные
 
 - **Python** 3.10+
-- **Graphviz** (системный пакет для рендеринга графа)
+- **Graphviz** с рендерером **cairo** — обязателен для `-Tpdf`
 
-```bash
-# Ubuntu / Debian
-sudo apt install graphviz
-
-# macOS
-brew install graphviz
-
-# Windows (Chocolatey)
-choco install graphviz
-```
+> ⚠️ Формат PDF в Graphviz доступен **только через cairo**. Проверить наличие:
+> ```bash
+> dot -Tpdf:cairo -V
+> ```
+> В выводе `-v` при рендере должно быть `Using device: pdf:cairo:cairo`.
 
 ### Python-зависимости
 
@@ -89,43 +82,11 @@ tqdm>=4.66.0
 
 ---
 
-## 🚀 Установка
-
-```bash
-# 1. Клонируйте репозиторий
-git clone https://github.com/your-username/wikimedia-collector.git
-cd wikimedia-collector
-
-# 2. Создайте виртуальное окружение
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate   # Windows
-
-# 3. Установите зависимости
-pip install -r requirements.txt
-
-# 4. Создайте файл User-Agent.json (см. следующий раздел)
-cp User-Agent.json.example User-Agent.json
-# Отредактируйте User-Agent.json под свои данные
-```
-
-**`requirements.txt`:**
-
-```
-requests>=2.31.0
-graphviz>=0.20.0
-tqdm>=4.66.0
-```
-
----
-
 ## 🪪 Настройка User-Agent
 
-> ⚠️ **Важно:** Wikimedia Foundation требует информативный `User-Agent` с контактом. Без него ваш бот может быть заблокирован без предупреждения.
+> ⚠️ Wikimedia Foundation требует информативный `User-Agent` с контактом. Без него бот может быть заблокирован без предупреждения.
 
 ### Формат файла `User-Agent.json`
-
-Создайте в корне проекта файл **`User-Agent.json`**:
 
 ```json
 {
@@ -137,19 +98,13 @@ tqdm>=4.66.0
 
 ### Приоритет загрузки
 
-1. Если есть поле `user_agent` — используется оно напрямую
-2. Если нет — собирается из `email` + `project_url`
-3. Если файл не найден — используется дефолтный User-Agent с предупреждением
+1. Есть поле `user_agent` → используется напрямую
+2. Нет → собирается из `email` + `project_url`
+3. Файл не найден → дефолтный User-Agent + предупреждение в консоль
 
-### Пример файла
+Файл читается **один раз** в `main()`, готовая строка передаётся во все экземпляры `MediaWikiAPI`.
 
-```json
-{
-  "user_agent": "MyCourseBot/2.0 (https://github.com/student/wikimedia-collector; student@university.edu) python-requests/2.31"
-}
-```
-
-### Кастомный путь к файлу
+### Кастомный путь
 
 ```bash
 python wikimedia_collector.py "Менделеев" --user-agent-file ./config/my-agent.json
@@ -159,26 +114,17 @@ python wikimedia_collector.py "Менделеев" --user-agent-file ./config/my
 
 ## 💻 Использование
 
-### Базовый синтаксис
-
 ```bash
 python wikimedia_collector.py "ЗАПРОС" [ОПЦИИ]
-```
-
-### Справка
-
-```bash
 python wikimedia_collector.py --help
 ```
-
-### Основные опции
 
 | Опция | Описание | По умолчанию |
 |-------|----------|--------------|
 | `query` | Запрос (личность/объект/событие) | *обязательно* |
 | `--lang {ru,en}` | Язык Википедии | `ru` |
-| `--output FILE` | Имя выходного JSON | `<query>.json` |
-| `--graph / --no-graph` | Построить граф связей | `--graph` |
+| `--output FILE` | Базовое имя выходных файлов | `<query>` |
+| `--graph / --no-graph` | Строить граф связей | `--graph` |
 | `--min-articles N` | Мин. статей в графе | `30` |
 | `--potd / --no-potd` | Загрузить Picture of the Day | `--potd` |
 | `--potd-date YYYY-MM-DD` | Дата POTD | сегодня |
@@ -190,50 +136,30 @@ python wikimedia_collector.py --help
 
 ## 🧪 Примеры запуска
 
-### 1. Базовый сбор данных
-
 ```bash
+# Базовый сбор
 python wikimedia_collector.py "Дмитрий Менделеев"
-```
 
-### 2. С кастомным User-Agent
-
-```bash
+# Кастомный User-Agent
 python wikimedia_collector.py "Байкал" --user-agent-file ./config/my-agent.json
-```
 
-### 3. Английская Википедия с графом
+# Английская Википедия
+python wikimedia_collector.py "Lake Baikal" --lang en
 
-```bash
-python wikimedia_collector.py "Lake Baikal" --lang en --graph
-```
-
-### 4. Расширенный граф (50 статей)
-
-```bash
+# Расширенный граф
 python wikimedia_collector.py "Александр Пушкин" --min-articles 50
-```
 
-### 5. Picture of the Day за конкретную дату
-
-```bash
+# POTD за конкретную дату
 python wikimedia_collector.py "Эйнштейн" --potd-date 2024-01-15
-```
 
-### 6. Только JSON, без графа и POTD
-
-```bash
+# Только JSON
 python wikimedia_collector.py "Кошка" --no-graph --no-potd
-```
 
-### 7. Полный пример со всеми параметрами
-
-```bash
+# Всё сразу
 python wikimedia_collector.py "Москва" \
     --lang ru \
     --output moscow_data \
     --min-articles 40 \
-    --potd \
     --potd-dir ./images/potd \
     --timeout 30 \
     --user-agent-file ./config/agent.json
@@ -243,31 +169,29 @@ python wikimedia_collector.py "Москва" \
 
 ## 📂 Структура выходных данных
 
-После выполнения в текущей директории появятся:
-
 ```
 .
 ├── <query>.json          # Основная JSON-структура
-├── <query>.dot           # DOT-файл графа связей
+├── <query>.dot           # DOT-файл графа (сохраняется всегда)
 ├── <query>.pdf           # Отрендеренный граф
 └── potd/
     ├── <filename>.jpg    # Picture of the Day
-    └── <filename>.txt    # Описание картинки
+    └── <filename>.txt    # Описание (имя = имя картинки)
 ```
 
-### Пример JSON-структуры
+### Пример JSON
 
 ```json
 {
   "query": "Дмитрий Менделеев",
-  "timestamp": "2026-11-24T12:00:00",
+  "timestamp": "2026-11-26T18:00:00",
   "wikipedia": {
     "pageid": 12345,
     "title": "Менделеев, Дмитрий Иванович",
     "extract": "Дми́трий Ива́нович Менделе́ев...",
-    "links": ["Химия", "Периодический закон", ...],
-    "images": ["File:Mendeleev.jpg", ...],
-    "categories": ["Химики России", ...],
+    "links": ["Химия", "Периодический закон"],
+    "images": ["File:Mendeleev.jpg"],
+    "categories": ["Химики России"],
     "thumbnail": "https://...",
     "original_image": "https://..."
   },
@@ -279,21 +203,16 @@ python wikimedia_collector.py "Москва" \
     "sitelinks": {"ruwiki": "...", "enwiki": "..."},
     "commons_category": "Dmitry Mendeleev"
   },
-  "wiktionary": {
-    "title": "Менделеев",
-    "definition": "..."
-  },
-  "commons": {
-    "images": ["File:Mendeleev.jpg", ...]
-  },
+  "wiktionary": {"title": "Менделеев", "definition": "..."},
+  "commons": {"images": ["File:Mendeleev.jpg"]},
   "picture_of_the_day": {
-    "date": "2026-11-24",
+    "date": "2026-11-26",
     "image_title": "File:Example.jpg",
     "local_file": "potd/Example.jpg",
     "description_file": "potd/Example.txt"
   },
   "graph_articles_count": 30,
-  "graph_articles_titles": [...]
+  "graph_articles_titles": ["..."]
 }
 ```
 
@@ -301,46 +220,113 @@ python wikimedia_collector.py "Москва" \
 
 ## 🐢 Этикет API и rate limiting
 
-### Базовая задержка
+### Адаптивная задержка
 
-Приложение использует **адаптивную задержку** между запросами:
+| Событие | Реакция |
+|---------|---------|
+| Базовый интервал | `BASE_DELAY = 3.0` с между запросами |
+| Успех (`200`) | задержка ×0.95, но не ниже `BASE_DELAY` |
+| `429 Too Many Requests` | задержка ×1.5, максимум `10.0` с |
+| `X-RateLimit-Remaining < 10` | предупреждение в stderr |
+| `X-RateLimit-Remaining < 5` | задержка ×2, максимум `10.0` с |
 
-- **Базовая задержка:** `3.0` секунды (`BASE_DELAY`)
-- **При успехе (200):** задержка постепенно уменьшается (×0.9)
-- **При rate limit (429):** задержка увеличивается (×1.5, макс. 10с)
+### Повторы запросов
 
-### Экспоненциальный backoff
+Декоратор `@retry_with_backoff` повторяет запрос при **сетевых исключениях** `requests.RequestException` (таймаут, обрыв соединения) с экспоненциальной задержкой: 3 → 6 → 12 → 24 → 48 с, до `MAX_RETRIES = 5` попыток.
 
-При получении HTTP 429:
-
-1. Читается заголовок `Retry-After` (если есть)
-2. Запрос повторяется до 5 раз (`MAX_RETRIES`)
-3. Задержка растёт экспоненциально: 3с → 6с → 12с → ...
-
-### Мониторинг rate limit
-
-Клиент автоматически проверяет заголовки `X-RateLimit-*`:
-
-- `X-RateLimit-Remaining` — сколько запросов осталось
-- `X-RateLimit-Reset` — через сколько секунд сбросится лимит
-
-При приближении к лимиту (< 10 запросов) — выводится предупреждение и увеличивается задержка.
+> ℹ️ **Важно:** ответ `429` не приводит к автоматическому повтору — метод `request()` возвращает пустой `{}`, а адаптивная задержка увеличивается для следующих вызовов. Если нужен честный ретрай по `429`, обработку следует перенести внутрь `request()`.
 
 ### Batch-запросы
 
-Для сбора графа статей используется **группировка запросов**:
-
-- До 50 `titles` за один HTTP-запрос
-- Формат: `titles=A|B|C|D|E`
-- Значительно снижает нагрузку на API и ускоряет сбор
+Сбор статей для графа идёт пачками до 50 `titles` за запрос (`titles=A|B|C|...`), что кратно снижает число обращений к API.
 
 ### Рекомендации
 
 | Сценарий | Действие |
 |----------|----------|
-| Частые 429 ошибки | Увеличьте `BASE_DELAY` в коде до `5.0` |
-| Массовый сбор (100+ статей) | Используйте batch-запросы (уже встроено) |
-| Параллельные запросы | Не рекомендуется для Wikimedia API |
+| Частые `429` | Поднять `BASE_DELAY` до `5.0`–`10.0` |
+| Массовый сбор | Batch уже встроен, дополнительно ничего не нужно |
+| Параллельные запросы | Не рекомендуются для Wikimedia API |
+
+---
+
+## 🕸 Рендеринг графа
+
+### DOT сохраняется всегда
+
+Даже если рендер недоступен или упал — `<query>.dot` остаётся на диске. Его можно открыть на [edotor.net](https://edotor.net/).
+
+### URL обязательно в percent-encoding
+
+Graphviz передаёт атрибут `URL` в cairo через **Tags & Links API** для создания PDF-аннотаций. **Сырая кириллица и пробелы в значении ломают cairo**, и на выходе получается нечитаемый PDF.
+
+```python
+from urllib.parse import quote
+
+# ❌ НЕЛЬЗЯ — битый PDF
+URL = f"https://ru.wikipedia.org/wiki/{title}"
+
+# ✅ ПРАВИЛЬНО
+URL = "https://ru.wikipedia.org/wiki/" + quote(title.replace(" ", "_"))
+```
+
+### Валидация результата
+
+`dot` возвращает **код 0 даже при внутренней ошибке cairo**, поэтому проверять размер файла недостаточно. Проверяется сигнатура:
+
+```python
+data = pdf_path.read_bytes()
+valid = data.startswith(b"%PDF-") and b"%%EOF" in data[-2048:]
+```
+
+### Переносы строк в label
+
+Для многострочной надписи нужна escape-последовательность DOT `\n` — в Python это `"\\n"` или `r"\n"`. **Сырой символ перевода строки внутри кавычек DOT не предусмотрен спецификацией** и ломает часть парсеров (например, viz.js на edotor.net).
+
+---
+
+## 🩺 Диагностика Graphviz
+
+Если PDF не открывается — не гадайте, запустите диагностику.
+
+### `4debaging/check_graphviz.py`
+
+Проверяет бинарь, доступные рендереры и валидность PDF на минимальном графе с кириллицей (через stdin→stdout, минуя файловые имена).
+
+```bash
+python 4debaging/check_graphviz.py
+```
+
+Ожидаемый вывод:
+
+```
+dot - graphviz version 16.1.1
+Using device: pdf:cairo:cairo
+заголовок: b'%PDF-1.7' | хвост: b'9\n%%EOF\n'
+ВАЛИДНЫЙ PDF: True
+```
+
+### `4debaging/isolate_pdf.py`
+
+Прогоняет 5 вариантов графа и показывает, какой именно ломается:
+
+| Вариант | Что проверяет |
+|---------|---------------|
+| `V1_baseline` | граф без `URL` |
+| `V2_URL_raw` | `URL` с сырой кириллицей и пробелами |
+| `V3_URL_encoded` | `URL` в percent-encoding |
+| `V4_raw_newline` | сырой `0x0A` внутри label |
+| `V5_cyrillic_filename` | кириллическое имя файла |
+
+**Типичный результат на Graphviz 16.x / Windows:**
+
+```
+V1_baseline      ВАЛИДЕН=True
+V2_URL_raw       ВАЛИДЕН=False   ← cairo: invalid tag name, attributes, or nesting
+V3_URL_encoded   ВАЛИДЕН=True
+V4_raw_newline   ВАЛИДЕН=True
+V5_cyrillic_filename ВАЛИДЕН=True
+```
 
 ---
 
@@ -348,21 +334,19 @@ python wikimedia_collector.py "Москва" \
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    CLI (argparse)                         │
-│         --user-agent-file → User-Agent.json               │
+│                    CLI (argparse)                        │
+│         --user-agent-file → User-Agent.json              │
 └──────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌──────────────────────────────────────────────────────────┐
-│              MediaWikiAPI (HTTP-клиент)                   │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │ • requests.Session (connection pooling)            │  │
-│  │ • User-Agent из JSON-файла                         │  │
-│  │ • Адаптивная задержка (BASE_DELAY = 3.0)           │  │
-│  │ • @retry_with_backoff (экспоненциальный backoff)   │  │
-│  │ • Проверка X-RateLimit-* заголовков                │  │
-│  │ • batch_request() — группировка до 50 titles       │  │
-│  └────────────────────────────────────────────────────┘  │
+│              MediaWikiAPI (HTTP-клиент)                  │
+│  • requests.Session (connection pooling)                 │
+│  • User-Agent, переданный извне                          │
+│  • Адаптивная задержка (BASE_DELAY = 3.0)                │
+│  • @retry_with_backoff (сетевые ошибки)                  │
+│  • Проверка X-RateLimit-* заголовков                     │
+│  • batch_request() — до 50 titles                        │
 └──────────────────────────────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
@@ -397,43 +381,69 @@ python wikimedia_collector.py "Москва" \
 | Викисловарь (RU) | `https://ru.wiktionary.org/w/api.php` |
 | Wikimedia Commons | `https://commons.wikimedia.org/w/api.php` |
 
-📚 **Полезные ссылки:**
-- [API: Учебное пособие — MediaWiki](https://www.mediawiki.org/wiki/API:Tutorial/ru)
-- [API Portal](https://www.mediawiki.org/wiki/API:Main_page/ru)
-- [Песочница API](https://ru.wikipedia.org/wiki/Special:ApiSandbox)
-- [API Etiquette](https://www.mediawiki.org/wiki/API:Etiquette)
-
 ---
 
 ## ⚠️ Известные ограничения
 
-- **Rate limiting** — API Wikimedia ограничивает частоту запросов. В коде предусмотрена адаптивная задержка `3.0с` между запросами + экспоненциальный backoff при 429.
-- **Граф может быть меньше 30 статей** — для узких запросов. Используйте `--min-articles` с меньшим значением или более общие запросы.
-- **POTD не для всех дат** — шаблон `Template:POTD_protected` может быть пуст для некоторых дней.
-- **JS-рендеринг** — приложение работает только со статическими API-ответами (для Wikimedia это не проблема).
-- **User-Agent обязателен** — без корректного User-Agent Wikimedia может заблокировать доступ.
+- **PDF требует cairo** — без cairo-рендерера формат PDF недоступен.
+- **`URL` только в percent-encoding** — иначе cairo ломает PDF при `exit=0`.
+- **Rate limiting** — адаптивная задержка есть, автоповтора по `429` нет.
+- **Граф может быть меньше 30 статей** — для узких запросов.
+- **POTD не для всех дат** — шаблон может быть пуст.
+- **User-Agent обязателен** — без корректного значения возможен бан.
 
 ---
 
-## 🔧 Troubleshooting
+## 🔧 Диагностика
 
-### Ошибка: `Rate limit (429)`
+### 🔴 PDF создаётся, но не открывается («Не удалось загрузить PDF-документ»)
+
+**Симптом:** файл есть, размер нормальный (10–20 КБ), исключений при рендере нет.
+
+**Причина:** не-ASCII символы или пробелы в атрибуте `URL`. В stderr при этом:
+
+```
+cairo: invalid tag name, attributes, or nesting
+```
+
+Graphviz отдаёт `URL` в cairo Tags & Links, cairo не может разобрать атрибуты, поверхность падает в ошибку — но **код возврата остаётся нулевым**.
 
 **Решение:**
-1. Увеличьте `BASE_DELAY` в коде до `5.0` или `10.0`
-2. Проверьте `User-Agent.json` — он должен содержать информативный User-Agent
-3. Подождите несколько минут перед повторным запуском
 
-### Ошибка: `User-Agent.json not found`
+```python
+URL = "https://ru.wikipedia.org/wiki/" + quote(title.replace(" ", "_"))
+```
 
-**Решение:**
-1. Создайте файл `User-Agent.json` в корне проекта
-2. Или укажите путь через `--user-agent-file ./path/to/agent.json`
+**Проверка:** запустите `tools/isolate_pdf.py`. Если `V2_URL_raw` битый, а `V3_URL_encoded` валиден — диагноз подтверждён.
+
+> 💡 Смена шрифтов здесь **не помогает**. Предупреждение Pango `couldn't load font "DejaVu Sans Not-Rotated"` безвредно и присутствует во всех вариантах, включая рабочие.
+
+---
+
+### `Rate limit (429)`
+
+1. Поднять `BASE_DELAY` до `5.0`–`10.0`
+2. Проверить `User-Agent.json` — должен содержать контакт
+3. Подождать несколько минут перед перезапуском
+
+---
+
+### `User-Agent.json not found`
+
+Создать файл в корне проекта или указать путь через `--user-agent-file`.
+
+---
 
 ### Граф меньше 30 статей
 
-**Решение:**
-1. Используйте более общий запрос (например, "Физика" вместо "Квантовая хромодинамика")
-2. Снизьте `--min-articles` до 20 или 15
-3. Проверьте, что корневая статья существует в Википедии
+- Более общий запрос («Физика» вместо «Квантовая хромодинамика»)
+- Снизить `--min-articles`
+- Убедиться, что корневая статья существует
 
+---
+
+### `Permission denied` при перезаписи PDF
+
+На Windows просмотрщик блокирует открытый файл. Закройте PDF перед повторным запуском или смените `--output`.
+
+---
