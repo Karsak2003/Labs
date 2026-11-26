@@ -21,15 +21,18 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
+import subprocess
 
 import requests
 from tqdm import tqdm
 
 try:
     import graphviz
+    from graphviz import escape
 except ImportError:
     graphviz = None
+    escape = None
 
 
 # ============================================================
@@ -655,19 +658,38 @@ def build_graph(
             file=sys.stderr,
         )
     
+    # Определяем шрифт с поддержкой кириллицы
+    font_name = "Arial" 
+    
     dot = graphviz.Digraph(
         name="WikimediaGraph",
         comment=f"Граф связей: {root_title}",
         format="pdf",
     )
+    
+    # КРИТИЧНО: указываем charset и fontname для поддержки кириллицы
     dot.attr(
         rankdir="LR",
-        label=f"Граф связей Wikimedia: {root_title}\nСтатей: {len(articles)}",
+        label=f"Граф связей Wikimedia: {root_title}; Статей: {len(articles)}",
         labelloc="t",
         fontsize="16",
+        fontname=font_name,
+        charset="UTF-8",  # Явно указываем UTF-8
     )
-    dot.attr("node", shape="box", style="filled", fillcolor="lightyellow")
-    dot.attr("edge", color="gray60")
+    
+    # Узлы с шрифтом, поддерживающим кириллицу
+    dot.attr("node", 
+             shape="box", 
+             style="filled", 
+             fillcolor="lightyellow",
+             fontname=font_name,
+             fontsize="10")
+    
+    # Рёбра с тем же шрифтом
+    dot.attr("edge", 
+             color="gray60",
+             fontname=font_name,
+             fontsize="8")
     
     # Множество названий для быстрого поиска
     known_titles = {a["title"] for a in articles}
@@ -680,7 +702,9 @@ def build_graph(
             a["title"],
             label=a["title"],
             fillcolor=color,
-            URL=f"https://ru.wikipedia.org/wiki/{a['title']}",
+            # Кириллица/пробелы в URL ломают cairo Tags & Links:
+            # PDF получается битым при exit=0. Кодируем в percent-encoding.
+            URL="https://ru.wikipedia.org/wiki/" + quote(a["title"].replace(" ", "_")),
         )
     
     # Добавляем рёбра (только между известными статьями)
@@ -696,20 +720,35 @@ def build_graph(
     dot_path.write_text(dot.source, encoding="utf-8")
     print(f"💾 DOT-файл графа сохранён: {dot_path}")
     
-    # Рендерим в PDF (если доступен системный graphviz)
+    # Рендерим в PDF
     if render_pdf:
         try:
             rendered = dot.render(filename=output_base, cleanup=True)
             print(f"🖼  Граф отрендерен: {rendered}")
+            
+            # Проверяем, что файл не пустой
+            pdf_path = Path(f"{output_base}.pdf")
+            if pdf_path.exists():
+                data = pdf_path.read_bytes()
+                # dot отдаёт exit=0 даже при ошибке cairo — проверяем байты
+                if data.startswith(b"%PDF-") and b"%%EOF" in data[-2048:]:
+                    print(f"  ✅ PDF валиден: {pdf_path} ({len(data)} байт)")
+                else:
+                    print(
+                        f"  [!] PDF битый ({len(data)} байт). "
+                        f"Причина — в stderr выше (ищи строку 'cairo:').",
+                        file=sys.stderr
+                    )
+                
         except Exception as e:
             print(f"  [!] Ошибка рендеринга графа: {e}", file=sys.stderr)
             print(f"  ℹ️  DOT-файл сохранён: {dot_path}")
+            print(f"  💡 Попробуйте открыть DOT-файл в онлайн-редакторе: https://edotor.net/")
     else:
         print("ℹ️  PDF не отрендерен (системный graphviz отсутствует)")
     
     print(f"📊 Граф: {len(articles)} узлов, {edges_count} рёбер")
     
-
 def collect_articles_for_graph(
     api_ru: MediaWikiAPI,
     root_title: str,
