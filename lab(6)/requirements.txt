@@ -1,0 +1,11 @@
+ 
+scikit-learn 
+gensim 
+matplotlib 
+seaborn 
+pandas
+pymorphy3 
+nltk 
+sentence-transformers 
+tqdm 
+numpy

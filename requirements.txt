@@ -22,3 +22,15 @@ html5lib
 pymorphy3
 graphviz 
 razdel
+
+scrapy
+scrapy-playwright
+ftfy
+itemadapter
+
+scikit-learn
+gensim
+matplotlib
+seaborn
+nltk
+sentence-transformers
